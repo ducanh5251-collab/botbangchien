@@ -1,8 +1,15 @@
 require("dotenv").config();
 
 const {
-    Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-    StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
+    Client,
+    GatewayIntentBits,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    StringSelectMenuBuilder,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
     PermissionFlagsBits
 } = require("discord.js");
 
@@ -34,18 +41,35 @@ const monPhaiColors = {
 const tempData = {};
 
 function isAdmin(interaction) {
-    return interaction.memberPermissions.has(PermissionFlagsBits.Administrator);
+    return interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+}
+
+function getGuildId(interaction) {
+    return interaction.guildId || interaction.guild?.id || "default";
+}
+
+function getGuildName(interaction) {
+    return interaction.guild?.name || "Unknown Server";
+}
+
+function getDisplayName(interaction) {
+    return interaction.member?.displayName || interaction.user?.globalName || interaction.user?.username || "Unknown";
 }
 
 function getKey(interaction) {
-    return `${interaction.guild.id}_${interaction.user.id}`;
+    return `${getGuildId(interaction)}_${interaction.user.id}`;
 }
 
 function getSheetId(guildId) {
     if (process.env.SERVER_CONFIG_JSON) {
-        const config = JSON.parse(process.env.SERVER_CONFIG_JSON);
-        if (config[guildId]) return config[guildId];
+        try {
+            const config = JSON.parse(process.env.SERVER_CONFIG_JSON);
+            if (config[guildId]) return config[guildId];
+        } catch (error) {
+            console.error("SERVER_CONFIG_JSON bị sai định dạng:", error);
+        }
     }
+
     return process.env.SHEET_ID;
 }
 
@@ -58,6 +82,7 @@ async function getDoc(guildId) {
 
     const doc = new GoogleSpreadsheet(getSheetId(guildId), auth);
     await doc.loadInfo();
+
     return doc;
 }
 
@@ -88,11 +113,20 @@ async function beautifySheet(guildId) {
     const requests = [
         {
             repeatCell: {
-                range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 9 },
+                range: {
+                    sheetId,
+                    startRowIndex: 0,
+                    endRowIndex: 1,
+                    startColumnIndex: 0,
+                    endColumnIndex: 9
+                },
                 cell: {
                     userEnteredFormat: {
                         backgroundColor: { red: 0.12, green: 0.24, blue: 0.42 },
-                        textFormat: { foregroundColor: { red: 1, green: 1, blue: 1 }, bold: true },
+                        textFormat: {
+                            foregroundColor: { red: 1, green: 1, blue: 1 },
+                            bold: true
+                        },
                         horizontalAlignment: "CENTER"
                     }
                 },
@@ -101,19 +135,36 @@ async function beautifySheet(guildId) {
         },
         {
             updateSheetProperties: {
-                properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+                properties: {
+                    sheetId,
+                    gridProperties: {
+                        frozenRowCount: 1
+                    }
+                },
                 fields: "gridProperties.frozenRowCount"
             }
         },
         {
             autoResizeDimensions: {
-                dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 9 }
+                dimensions: {
+                    sheetId,
+                    dimension: "COLUMNS",
+                    startIndex: 0,
+                    endIndex: 9
+                }
             }
         },
         {
             updateDimensionProperties: {
-                range: { sheetId, dimension: "COLUMNS", startIndex: 8, endIndex: 9 },
-                properties: { hiddenByUser: true },
+                range: {
+                    sheetId,
+                    dimension: "COLUMNS",
+                    startIndex: 8,
+                    endIndex: 9
+                },
+                properties: {
+                    hiddenByUser: true
+                },
                 fields: "hiddenByUser"
             }
         }
@@ -123,13 +174,26 @@ async function beautifySheet(guildId) {
         requests.push({
             addConditionalFormatRule: {
                 rule: {
-                    ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 9 }],
+                    ranges: [
+                        {
+                            sheetId,
+                            startRowIndex: 1,
+                            startColumnIndex: 0,
+                            endColumnIndex: 9
+                        }
+                    ],
                     booleanRule: {
                         condition: {
                             type: "CUSTOM_FORMULA",
-                            values: [{ userEnteredValue: `=$C2="${monPhai}"` }]
+                            values: [
+                                {
+                                    userEnteredValue: `=$C2="${monPhai}"`
+                                }
+                            ]
                         },
-                        format: { backgroundColor: color }
+                        format: {
+                            backgroundColor: color
+                        }
                     }
                 },
                 index: 0
@@ -143,6 +207,7 @@ async function beautifySheet(guildId) {
 async function saveToGoogleSheet(data) {
     const sheet = await getSheet(data.guildId);
     const rows = await sheet.getRows();
+
     const oldRow = rows.find(row => row.get("Discord ID Ẩn") === data.discordId);
 
     if (oldRow) {
@@ -176,10 +241,14 @@ async function saveToGoogleSheet(data) {
 async function deleteRegistration(guildId, discordId) {
     const sheet = await getSheet(guildId);
     const rows = await sheet.getRows();
+
     const row = rows.find(r => r.get("Discord ID Ẩn") === discordId);
+
     if (!row) return false;
+
     await row.delete();
     await beautifySheet(guildId);
+
     return true;
 }
 
@@ -232,10 +301,10 @@ async function openNameModal(interaction, monPhai, mode = "register") {
     const key = getKey(interaction);
 
     tempData[key] = {
-        guildId: interaction.guild.id,
-        guildName: interaction.guild.name,
+        guildId: getGuildId(interaction),
+        guildName: getGuildName(interaction),
         discordId: interaction.user.id,
-        discordName: interaction.member.displayName,
+        discordName: getDisplayName(interaction),
         monPhai,
         mode
     };
@@ -251,6 +320,7 @@ async function openNameModal(interaction, monPhai, mode = "register") {
         .setRequired(true);
 
     modal.addComponents(new ActionRowBuilder().addComponents(tenInput));
+
     await interaction.showModal(modal);
 }
 
@@ -292,7 +362,8 @@ function createRankMenu() {
 }
 
 async function sendStats(interaction) {
-    const rows = await getAllRows(interaction.guild.id);
+    const rows = await getAllRows(getGuildId(interaction));
+
     const counts = {};
     Object.values(monPhaiMap).forEach(name => counts[name] = 0);
 
@@ -302,26 +373,41 @@ async function sendStats(interaction) {
     });
 
     let message = "📊 **THỐNG KÊ MÔN PHÁI**\n\n";
+
     for (const [monPhai, count] of Object.entries(counts)) {
         message += `⚔️ ${monPhai}: **${count}**\n`;
     }
+
     message += `\n👥 Tổng: **${rows.length}**`;
 
-    await interaction.reply({ content: message, ephemeral: true });
+    await interaction.reply({
+        content: message,
+        ephemeral: true
+    });
 }
 
 async function sendList(interaction, type) {
-    const rows = await getAllRows(interaction.guild.id);
+    const rows = await getAllRows(getGuildId(interaction));
 
     let filtered = rows;
-    if (type === "bangchien") filtered = rows.filter(row => row.get("Bang Chiến") === "Có");
-    if (type === "scrim") filtered = rows.filter(row => row.get("Scrim") === "Có");
+
+    if (type === "bangchien") {
+        filtered = rows.filter(row => row.get("Bang Chiến") === "Có");
+    }
+
+    if (type === "scrim") {
+        filtered = rows.filter(row => row.get("Scrim") === "Có");
+    }
 
     if (filtered.length === 0) {
-        return interaction.reply({ content: "❌ Chưa có dữ liệu phù hợp.", ephemeral: true });
+        return interaction.reply({
+            content: "❌ Chưa có dữ liệu phù hợp.",
+            ephemeral: true
+        });
     }
 
     const title = type === "bangchien" ? "🏰 DANH SÁCH BANG CHIẾN" : "🥊 DANH SÁCH SCRIM";
+
     let message = `**${title}**\n\n`;
 
     filtered.slice(0, 40).forEach((row, index) => {
@@ -332,10 +418,15 @@ async function sendList(interaction, type) {
         message += `\n...và ${filtered.length - 40} người khác. Xem đầy đủ trên Google Sheets.`;
     }
 
-    await interaction.reply({ content: message, ephemeral: true });
+    await interaction.reply({
+        content: message,
+        ephemeral: true
+    });
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({
+    intents: [GatewayIntentBits.Guilds]
+});
 
 client.once("clientReady", async () => {
     console.log(`✅ Bot đã online: ${client.user.tag}`);
@@ -385,12 +476,20 @@ client.on("interactionCreate", async (interaction) => {
 
             if (interaction.commandName === "dongform") {
                 FORM_OPEN = false;
-                return interaction.reply("🔒 Đã đóng form đăng ký.");
+
+                return interaction.reply({
+                    content: "🔒 Đã đóng form đăng ký.",
+                    ephemeral: false
+                });
             }
 
             if (interaction.commandName === "moform") {
                 FORM_OPEN = true;
-                return interaction.reply("✅ Đã mở lại form đăng ký.");
+
+                return interaction.reply({
+                    content: "✅ Đã mở lại form đăng ký.",
+                    ephemeral: false
+                });
             }
 
             if (interaction.commandName === "thongke") {
@@ -418,7 +517,9 @@ client.on("interactionCreate", async (interaction) => {
             if (interaction.customId.startsWith("edit_")) {
                 const monPhaiId = interaction.customId.replace("edit_", "");
                 const monPhai = monPhaiMap[monPhaiId];
+
                 if (!monPhai) return;
+
                 return await openNameModal(interaction, monPhai, "edit");
             }
 
@@ -431,7 +532,8 @@ client.on("interactionCreate", async (interaction) => {
             }
 
             if (interaction.customId === "delete_register") {
-                const deleted = await deleteRegistration(interaction.guild.id, interaction.user.id);
+                const deleted = await deleteRegistration(getGuildId(interaction), interaction.user.id);
+
                 return interaction.reply({
                     content: deleted ? "🗑️ Đã hủy đăng ký của bạn." : "❌ Bạn chưa có đăng ký để hủy.",
                     ephemeral: true
@@ -478,6 +580,7 @@ client.on("interactionCreate", async (interaction) => {
 
             if (interaction.customId === "select_bangchien") {
                 tempData[key].bangChien = interaction.values[0];
+
                 return interaction.update({
                     content: `✅ Bang Chiến: **${tempData[key].bangChien}**\n\nTiếp theo chọn đánh Scrim:`,
                     components: [new ActionRowBuilder().addComponents(createScrimMenu())]
@@ -486,6 +589,7 @@ client.on("interactionCreate", async (interaction) => {
 
             if (interaction.customId === "select_scrim") {
                 tempData[key].scrim = interaction.values[0];
+
                 return interaction.update({
                     content: `✅ Scrim: **${tempData[key].scrim}**\n\nTiếp theo chọn Rank:`,
                     components: [new ActionRowBuilder().addComponents(createRankMenu())]
