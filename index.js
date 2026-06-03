@@ -12,13 +12,8 @@ const {
     TextInputStyle
 } = require("discord.js");
 
-const {
-    saveRegistration,
-    getAllRegistrations
-} = require("./database");
-
-const XLSX = require("xlsx");
-const path = require("path");
+const { GoogleSpreadsheet } = require("google-spreadsheet");
+const { JWT } = require("google-auth-library");
 
 const CHANNEL_ID = "1489617974380855357";
 
@@ -34,17 +29,73 @@ const monPhaiMap = {
 
 const tempData = {};
 
-async function autoSaveExcel() {
-    const rows = await getAllRegistrations();
+function getSheetId(guildId) {
+    if (process.env.SERVER_CONFIG_JSON) {
+        const config = JSON.parse(process.env.SERVER_CONFIG_JSON);
+        if (config[guildId]) return config[guildId];
+    }
 
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
+    return process.env.SHEET_ID;
+}
 
-    XLSX.utils.book_append_sheet(workbook, worksheet, "BangChien");
+async function getSheet(guildId) {
+    const sheetId = getSheetId(guildId);
 
-    const filePath = path.join(__dirname, "BangChien.xlsx");
+    const auth = new JWT({
+        email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+        scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+    });
 
-    XLSX.writeFile(workbook, filePath);
+    const doc = new GoogleSpreadsheet(sheetId, auth);
+    await doc.loadInfo();
+
+    const sheet = doc.sheetsByIndex[0];
+
+    await sheet.setHeaderRow([
+        "Discord ID",
+        "Tên Discord",
+        "Tên nhân vật",
+        "Môn phái",
+        "Bang Chiến",
+        "Scrim",
+        "Rank",
+        "Server",
+        "Thời gian"
+    ]);
+
+    return sheet;
+}
+
+async function saveToGoogleSheet(data) {
+    const sheet = await getSheet(data.guildId);
+    const rows = await sheet.getRows();
+
+    const oldRow = rows.find(row => row.get("Discord ID") === data.discordId);
+
+    if (oldRow) {
+        oldRow.set("Tên Discord", data.discordName);
+        oldRow.set("Tên nhân vật", data.tenNhanVat);
+        oldRow.set("Môn phái", data.monPhai);
+        oldRow.set("Bang Chiến", data.bangChien);
+        oldRow.set("Scrim", data.scrim);
+        oldRow.set("Rank", data.rank);
+        oldRow.set("Server", data.guildName);
+        oldRow.set("Thời gian", data.time);
+        await oldRow.save();
+    } else {
+        await sheet.addRow({
+            "Discord ID": data.discordId,
+            "Tên Discord": data.discordName,
+            "Tên nhân vật": data.tenNhanVat,
+            "Môn phái": data.monPhai,
+            "Bang Chiến": data.bangChien,
+            "Scrim": data.scrim,
+            "Rank": data.rank,
+            "Server": data.guildName,
+            "Thời gian": data.time
+        });
+    }
 }
 
 const client = new Client({
@@ -54,51 +105,29 @@ const client = new Client({
 client.once("clientReady", async () => {
     console.log(`✅ Bot đã online: ${client.user.tag}`);
 
-    const channel = await client.channels.fetch(CHANNEL_ID);
+    try {
+        const channel = await client.channels.fetch(CHANNEL_ID);
 
-    const row1 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId("toaimong")
-            .setLabel("Toái Mộng")
-            .setStyle(ButtonStyle.Primary),
+        const row1 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId("toaimong").setLabel("Toái Mộng").setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId("thantuong").setLabel("Thần Tương").setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId("huyetha").setLabel("Huyết Hà").setStyle(ButtonStyle.Danger)
+        );
 
-        new ButtonBuilder()
-            .setCustomId("thantuong")
-            .setLabel("Thần Tương")
-            .setStyle(ButtonStyle.Primary),
+        const row2 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId("longngam").setLabel("Long Ngâm").setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId("cuulinh").setLabel("Cửu Linh").setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId("tovan").setLabel("Tố Vấn").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId("thiety").setLabel("Thiết Y").setStyle(ButtonStyle.Secondary)
+        );
 
-        new ButtonBuilder()
-            .setCustomId("huyetha")
-            .setLabel("Huyết Hà")
-            .setStyle(ButtonStyle.Danger)
-    );
-
-    const row2 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId("longngam")
-            .setLabel("Long Ngâm")
-            .setStyle(ButtonStyle.Success),
-
-        new ButtonBuilder()
-            .setCustomId("cuulinh")
-            .setLabel("Cửu Linh")
-            .setStyle(ButtonStyle.Success),
-
-        new ButtonBuilder()
-            .setCustomId("tovan")
-            .setLabel("Tố Vấn")
-            .setStyle(ButtonStyle.Secondary),
-
-        new ButtonBuilder()
-            .setCustomId("thiety")
-            .setLabel("Thiết Y")
-            .setStyle(ButtonStyle.Secondary)
-    );
-
-    await channel.send({
-        content: "📋 **ĐĂNG KÝ BANG CHIẾN**\n\nVui lòng chọn môn phái:",
-        components: [row1, row2]
-    });
+        await channel.send({
+            content: "📋 **ĐĂNG KÝ BANG CHIẾN**\n\nVui lòng chọn môn phái:",
+            components: [row1, row2]
+        });
+    } catch (error) {
+        console.log("⚠️ Không gửi được bảng nút tự động. Kiểm tra CHANNEL_ID.");
+    }
 });
 
 client.on("interactionCreate", async (interaction) => {
@@ -108,7 +137,10 @@ client.on("interactionCreate", async (interaction) => {
             if (!monPhai) return;
 
             tempData[interaction.user.id] = {
+                guildId: interaction.guild.id,
+                guildName: interaction.guild.name,
                 discordId: interaction.user.id,
+                discordName: interaction.member.displayName,
                 monPhai: monPhai
             };
 
@@ -132,16 +164,7 @@ client.on("interactionCreate", async (interaction) => {
         if (interaction.isModalSubmit()) {
             const userId = interaction.user.id;
 
-            if (!tempData[userId]) {
-                return interaction.reply({
-                    content: "❌ Bạn chưa chọn môn phái.",
-                    ephemeral: true
-                });
-            }
-
-            const tenNhanVat =
-                interaction.fields.getTextInputValue("ten_nhan_vat");
-
+            const tenNhanVat = interaction.fields.getTextInputValue("ten_nhan_vat");
             tempData[userId].tenNhanVat = tenNhanVat;
 
             const bangChienMenu = new StringSelectMenuBuilder()
@@ -157,22 +180,13 @@ client.on("interactionCreate", async (interaction) => {
                     `👤 Tên nhân vật: **${tenNhanVat}**\n` +
                     `⚔️ Môn phái: **${tempData[userId].monPhai}**\n\n` +
                     `Tiếp theo chọn tham gia Bang Chiến:`,
-                components: [
-                    new ActionRowBuilder().addComponents(bangChienMenu)
-                ],
+                components: [new ActionRowBuilder().addComponents(bangChienMenu)],
                 ephemeral: true
             });
         }
 
         if (interaction.isStringSelectMenu()) {
             const userId = interaction.user.id;
-
-            if (!tempData[userId]) {
-                return interaction.reply({
-                    content: "❌ Bạn chưa chọn môn phái.",
-                    ephemeral: true
-                });
-            }
 
             if (interaction.customId === "select_bangchien") {
                 tempData[userId].bangChien = interaction.values[0];
@@ -186,12 +200,8 @@ client.on("interactionCreate", async (interaction) => {
                     );
 
                 await interaction.update({
-                    content:
-                        `✅ Bang Chiến: **${tempData[userId].bangChien}**\n\n` +
-                        `Tiếp theo chọn đánh Scrim:`,
-                    components: [
-                        new ActionRowBuilder().addComponents(scrimMenu)
-                    ]
+                    content: `✅ Bang Chiến: **${tempData[userId].bangChien}**\n\nTiếp theo chọn đánh Scrim:`,
+                    components: [new ActionRowBuilder().addComponents(scrimMenu)]
                 });
             }
 
@@ -214,12 +224,8 @@ client.on("interactionCreate", async (interaction) => {
                     );
 
                 await interaction.update({
-                    content:
-                        `✅ Scrim: **${tempData[userId].scrim}**\n\n` +
-                        `Tiếp theo chọn Rank:`,
-                    components: [
-                        new ActionRowBuilder().addComponents(rankMenu)
-                    ]
+                    content: `✅ Scrim: **${tempData[userId].scrim}**\n\nTiếp theo chọn Rank:`,
+                    components: [new ActionRowBuilder().addComponents(rankMenu)]
                 });
             }
 
@@ -231,8 +237,7 @@ client.on("interactionCreate", async (interaction) => {
                     time: new Date().toLocaleString("vi-VN")
                 };
 
-                await saveRegistration(data);
-                await autoSaveExcel();
+                await saveToGoogleSheet(data);
 
                 await interaction.update({
                     content:
@@ -242,7 +247,7 @@ client.on("interactionCreate", async (interaction) => {
                         `🏰 Bang Chiến: **${data.bangChien}**\n` +
                         `🥊 Scrim: **${data.scrim}**\n` +
                         `🏆 Rank: **${data.rank}**\n\n` +
-                        `💾 Dữ liệu đã được lưu vào database và Excel.`,
+                        `📊 Dữ liệu đã được lưu lên Google Sheets.`,
                     components: []
                 });
 
