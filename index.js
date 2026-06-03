@@ -26,6 +26,16 @@ const monPhaiMap = {
     thiety: "Thiết Y"
 };
 
+const monPhaiColors = {
+    "Toái Mộng": { red: 0.00, green: 0.75, blue: 1.00 },
+    "Tố Vấn": { red: 1.00, green: 0.71, blue: 0.76 },
+    "Thiết Y": { red: 1.00, green: 0.84, blue: 0.00 },
+    "Long Ngâm": { red: 0.20, green: 0.80, blue: 0.20 },
+    "Cửu Linh": { red: 0.58, green: 0.44, blue: 0.86 },
+    "Huyết Hà": { red: 1.00, green: 0.39, blue: 0.28 },
+    "Thần Tương": { red: 0.53, green: 0.81, blue: 0.98 }
+};
+
 const tempData = {};
 
 function getKey(interaction) {
@@ -37,10 +47,11 @@ function getSheetId(guildId) {
         const config = JSON.parse(process.env.SERVER_CONFIG_JSON);
         if (config[guildId]) return config[guildId];
     }
+
     return process.env.SHEET_ID;
 }
 
-async function getSheet(guildId) {
+async function getDoc(guildId) {
     const auth = new JWT({
         email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
         key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
@@ -50,62 +61,176 @@ async function getSheet(guildId) {
     const doc = new GoogleSpreadsheet(getSheetId(guildId), auth);
     await doc.loadInfo();
 
+    return doc;
+}
+
+async function getSheet(guildId) {
+    const doc = await getDoc(guildId);
     const sheet = doc.sheetsByIndex[0];
 
     await sheet.setHeaderRow([
-        "Discord ID",
         "Tên Discord",
         "Tên nhân vật",
         "Môn phái",
+        "Rank",
         "Bang Chiến",
         "Scrim",
-        "Rank",
         "Server",
-        "Thời gian"
+        "Thời gian",
+        "Discord ID Ẩn"
     ]);
 
     return sheet;
+}
+
+async function beautifySheet(guildId) {
+    const doc = await getDoc(guildId);
+    const sheet = doc.sheetsByIndex[0];
+    const sheetId = sheet.sheetId;
+
+    const requests = [];
+
+    requests.push({
+        repeatCell: {
+            range: {
+                sheetId,
+                startRowIndex: 0,
+                endRowIndex: 1,
+                startColumnIndex: 0,
+                endColumnIndex: 9
+            },
+            cell: {
+                userEnteredFormat: {
+                    backgroundColor: { red: 0.12, green: 0.24, blue: 0.42 },
+                    textFormat: {
+                        foregroundColor: { red: 1, green: 1, blue: 1 },
+                        bold: true
+                    },
+                    horizontalAlignment: "CENTER"
+                }
+            },
+            fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
+        }
+    });
+
+    requests.push({
+        updateSheetProperties: {
+            properties: {
+                sheetId,
+                gridProperties: {
+                    frozenRowCount: 1,
+                    frozenColumnCount: 0
+                }
+            },
+            fields: "gridProperties.frozenRowCount,gridProperties.frozenColumnCount"
+        }
+    });
+
+    requests.push({
+        autoResizeDimensions: {
+            dimensions: {
+                sheetId,
+                dimension: "COLUMNS",
+                startIndex: 0,
+                endIndex: 9
+            }
+        }
+    });
+
+    requests.push({
+        updateDimensionProperties: {
+            range: {
+                sheetId,
+                dimension: "COLUMNS",
+                startIndex: 8,
+                endIndex: 9
+            },
+            properties: {
+                hiddenByUser: true
+            },
+            fields: "hiddenByUser"
+        }
+    });
+
+    for (const [monPhai, color] of Object.entries(monPhaiColors)) {
+        requests.push({
+            addConditionalFormatRule: {
+                rule: {
+                    ranges: [
+                        {
+                            sheetId,
+                            startRowIndex: 1,
+                            startColumnIndex: 0,
+                            endColumnIndex: 9
+                        }
+                    ],
+                    booleanRule: {
+                        condition: {
+                            type: "CUSTOM_FORMULA",
+                            values: [
+                                {
+                                    userEnteredValue: `=$C2="${monPhai}"`
+                                }
+                            ]
+                        },
+                        format: {
+                            backgroundColor: color
+                        }
+                    }
+                },
+                index: 0
+            }
+        });
+    }
+
+    await doc.batchUpdate({ requests });
 }
 
 async function saveToGoogleSheet(data) {
     const sheet = await getSheet(data.guildId);
     const rows = await sheet.getRows();
 
-    const oldRow = rows.find(row => row.get("Discord ID") === data.discordId);
+    const oldRow = rows.find(row => row.get("Discord ID Ẩn") === data.discordId);
 
     if (oldRow) {
         oldRow.set("Tên Discord", data.discordName);
         oldRow.set("Tên nhân vật", data.tenNhanVat);
         oldRow.set("Môn phái", data.monPhai);
+        oldRow.set("Rank", data.rank);
         oldRow.set("Bang Chiến", data.bangChien);
         oldRow.set("Scrim", data.scrim);
-        oldRow.set("Rank", data.rank);
         oldRow.set("Server", data.guildName);
         oldRow.set("Thời gian", data.time);
+        oldRow.set("Discord ID Ẩn", data.discordId);
         await oldRow.save();
     } else {
         await sheet.addRow({
-            "Discord ID": data.discordId,
             "Tên Discord": data.discordName,
             "Tên nhân vật": data.tenNhanVat,
             "Môn phái": data.monPhai,
+            "Rank": data.rank,
             "Bang Chiến": data.bangChien,
             "Scrim": data.scrim,
-            "Rank": data.rank,
             "Server": data.guildName,
-            "Thời gian": data.time
+            "Thời gian": data.time,
+            "Discord ID Ẩn": data.discordId
         });
     }
+
+    await beautifySheet(data.guildId);
 }
 
 async function deleteRegistration(guildId, discordId) {
     const sheet = await getSheet(guildId);
     const rows = await sheet.getRows();
 
-    const row = rows.find(r => r.get("Discord ID") === discordId);
+    const row = rows.find(r => r.get("Discord ID Ẩn") === discordId);
+
     if (!row) return false;
 
     await row.delete();
+    await beautifySheet(guildId);
+
     return true;
 }
 
