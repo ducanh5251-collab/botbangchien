@@ -1,20 +1,15 @@
 require("dotenv").config();
 
 const {
-    Client,
-    GatewayIntentBits,
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle,
-    StringSelectMenuBuilder,
-    ModalBuilder,
-    TextInputBuilder,
-    TextInputStyle,
+    Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle,
+    StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
     PermissionFlagsBits
 } = require("discord.js");
 
 const { GoogleSpreadsheet } = require("google-spreadsheet");
 const { JWT } = require("google-auth-library");
+
+let FORM_OPEN = true;
 
 const monPhaiMap = {
     toaimong: "Toái Mộng",
@@ -38,6 +33,10 @@ const monPhaiColors = {
 
 const tempData = {};
 
+function isAdmin(interaction) {
+    return interaction.memberPermissions.has(PermissionFlagsBits.Administrator);
+}
+
 function getKey(interaction) {
     return `${interaction.guild.id}_${interaction.user.id}`;
 }
@@ -47,7 +46,6 @@ function getSheetId(guildId) {
         const config = JSON.parse(process.env.SERVER_CONFIG_JSON);
         if (config[guildId]) return config[guildId];
     }
-
     return process.env.SHEET_ID;
 }
 
@@ -60,7 +58,6 @@ async function getDoc(guildId) {
 
     const doc = new GoogleSpreadsheet(getSheetId(guildId), auth);
     await doc.loadInfo();
-
     return doc;
 }
 
@@ -88,94 +85,51 @@ async function beautifySheet(guildId) {
     const sheet = doc.sheetsByIndex[0];
     const sheetId = sheet.sheetId;
 
-    const requests = [];
-
-    requests.push({
-        repeatCell: {
-            range: {
-                sheetId,
-                startRowIndex: 0,
-                endRowIndex: 1,
-                startColumnIndex: 0,
-                endColumnIndex: 9
-            },
-            cell: {
-                userEnteredFormat: {
-                    backgroundColor: { red: 0.12, green: 0.24, blue: 0.42 },
-                    textFormat: {
-                        foregroundColor: { red: 1, green: 1, blue: 1 },
-                        bold: true
-                    },
-                    horizontalAlignment: "CENTER"
-                }
-            },
-            fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
-        }
-    });
-
-    requests.push({
-        updateSheetProperties: {
-            properties: {
-                sheetId,
-                gridProperties: {
-                    frozenRowCount: 1,
-                    frozenColumnCount: 0
-                }
-            },
-            fields: "gridProperties.frozenRowCount,gridProperties.frozenColumnCount"
-        }
-    });
-
-    requests.push({
-        autoResizeDimensions: {
-            dimensions: {
-                sheetId,
-                dimension: "COLUMNS",
-                startIndex: 0,
-                endIndex: 9
+    const requests = [
+        {
+            repeatCell: {
+                range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 9 },
+                cell: {
+                    userEnteredFormat: {
+                        backgroundColor: { red: 0.12, green: 0.24, blue: 0.42 },
+                        textFormat: { foregroundColor: { red: 1, green: 1, blue: 1 }, bold: true },
+                        horizontalAlignment: "CENTER"
+                    }
+                },
+                fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
+            }
+        },
+        {
+            updateSheetProperties: {
+                properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+                fields: "gridProperties.frozenRowCount"
+            }
+        },
+        {
+            autoResizeDimensions: {
+                dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 9 }
+            }
+        },
+        {
+            updateDimensionProperties: {
+                range: { sheetId, dimension: "COLUMNS", startIndex: 8, endIndex: 9 },
+                properties: { hiddenByUser: true },
+                fields: "hiddenByUser"
             }
         }
-    });
-
-    requests.push({
-        updateDimensionProperties: {
-            range: {
-                sheetId,
-                dimension: "COLUMNS",
-                startIndex: 8,
-                endIndex: 9
-            },
-            properties: {
-                hiddenByUser: true
-            },
-            fields: "hiddenByUser"
-        }
-    });
+    ];
 
     for (const [monPhai, color] of Object.entries(monPhaiColors)) {
         requests.push({
             addConditionalFormatRule: {
                 rule: {
-                    ranges: [
-                        {
-                            sheetId,
-                            startRowIndex: 1,
-                            startColumnIndex: 0,
-                            endColumnIndex: 9
-                        }
-                    ],
+                    ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 9 }],
                     booleanRule: {
                         condition: {
                             type: "CUSTOM_FORMULA",
-                            values: [
-                                {
-                                    userEnteredValue: `=$C2="${monPhai}"`
-                                }
-                            ]
+                            values: [{ userEnteredValue: `=$C2="${monPhai}"` }]
                         },
-                        format: {
-                            backgroundColor: color
-                        }
+                        format: { backgroundColor: color }
                     }
                 },
                 index: 0
@@ -189,7 +143,6 @@ async function beautifySheet(guildId) {
 async function saveToGoogleSheet(data) {
     const sheet = await getSheet(data.guildId);
     const rows = await sheet.getRows();
-
     const oldRow = rows.find(row => row.get("Discord ID Ẩn") === data.discordId);
 
     if (oldRow) {
@@ -223,14 +176,10 @@ async function saveToGoogleSheet(data) {
 async function deleteRegistration(guildId, discordId) {
     const sheet = await getSheet(guildId);
     const rows = await sheet.getRows();
-
     const row = rows.find(r => r.get("Discord ID Ẩn") === discordId);
-
     if (!row) return false;
-
     await row.delete();
     await beautifySheet(guildId);
-
     return true;
 }
 
@@ -259,12 +208,7 @@ function createMainButtons() {
         new ButtonBuilder().setCustomId("stats_class").setLabel("📊 Thống kê").setStyle(ButtonStyle.Secondary)
     );
 
-    const row4 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("list_bangchien").setLabel("📋 DS Bang Chiến").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("list_scrim").setLabel("📋 DS Scrim").setStyle(ButtonStyle.Success)
-    );
-
-    return [row1, row2, row3, row4];
+    return [row1, row2, row3];
 }
 
 function createEditClassButtons() {
@@ -307,7 +251,6 @@ async function openNameModal(interaction, monPhai, mode = "register") {
         .setRequired(true);
 
     modal.addComponents(new ActionRowBuilder().addComponents(tenInput));
-
     await interaction.showModal(modal);
 }
 
@@ -350,7 +293,6 @@ function createRankMenu() {
 
 async function sendStats(interaction) {
     const rows = await getAllRows(interaction.guild.id);
-
     const counts = {};
     Object.values(monPhaiMap).forEach(name => counts[name] = 0);
 
@@ -360,44 +302,26 @@ async function sendStats(interaction) {
     });
 
     let message = "📊 **THỐNG KÊ MÔN PHÁI**\n\n";
-
     for (const [monPhai, count] of Object.entries(counts)) {
         message += `⚔️ ${monPhai}: **${count}**\n`;
     }
-
     message += `\n👥 Tổng: **${rows.length}**`;
 
-    await interaction.reply({
-        content: message,
-        ephemeral: true
-    });
+    await interaction.reply({ content: message, ephemeral: true });
 }
 
 async function sendList(interaction, type) {
     const rows = await getAllRows(interaction.guild.id);
 
     let filtered = rows;
-
-    if (type === "bangchien") {
-        filtered = rows.filter(row => row.get("Bang Chiến") === "Có");
-    }
-
-    if (type === "scrim") {
-        filtered = rows.filter(row => row.get("Scrim") === "Có");
-    }
+    if (type === "bangchien") filtered = rows.filter(row => row.get("Bang Chiến") === "Có");
+    if (type === "scrim") filtered = rows.filter(row => row.get("Scrim") === "Có");
 
     if (filtered.length === 0) {
-        return interaction.reply({
-            content: "❌ Chưa có dữ liệu phù hợp.",
-            ephemeral: true
-        });
+        return interaction.reply({ content: "❌ Chưa có dữ liệu phù hợp.", ephemeral: true });
     }
 
-    const title =
-        type === "bangchien"
-            ? "🏰 DANH SÁCH BANG CHIẾN"
-            : "🥊 DANH SÁCH SCRIM";
-
+    const title = type === "bangchien" ? "🏰 DANH SÁCH BANG CHIẾN" : "🥊 DANH SÁCH SCRIM";
     let message = `**${title}**\n\n`;
 
     filtered.slice(0, 40).forEach((row, index) => {
@@ -408,31 +332,22 @@ async function sendList(interaction, type) {
         message += `\n...và ${filtered.length - 40} người khác. Xem đầy đủ trên Google Sheets.`;
     }
 
-    await interaction.reply({
-        content: message,
-        ephemeral: true
-    });
+    await interaction.reply({ content: message, ephemeral: true });
 }
 
-const client = new Client({
-    intents: [GatewayIntentBits.Guilds]
-});
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once("clientReady", async () => {
     console.log(`✅ Bot đã online: ${client.user.tag}`);
 
     await client.application.commands.set([
+        { name: "taoform", description: "Tạo form đăng ký Bang Chiến" },
+        { name: "dongform", description: "Đóng form đăng ký" },
+        { name: "moform", description: "Mở form đăng ký" },
+        { name: "thongke", description: "Xem thống kê môn phái" },
         {
-            name: "taoform",
-            description: "Tạo bảng đăng ký Bang Chiến"
-        },
-        {
-            name: "thongke",
-            description: "Xem thống kê môn phái"
-        },
-        {
-            name: "danhsach",
-            description: "Xem danh sách Bang Chiến hoặc Scrim",
+            name: "xuatdanhsach",
+            description: "Xuất danh sách Bang Chiến hoặc Scrim",
             options: [
                 {
                     name: "loai",
@@ -452,41 +367,58 @@ client.once("clientReady", async () => {
 client.on("interactionCreate", async (interaction) => {
     try {
         if (interaction.isChatInputCommand()) {
-            if (interaction.commandName === "taoform") {
-                if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({
-                        content: "❌ Chỉ Admin mới được tạo form đăng ký.",
-                        ephemeral: true
-                    });
-                }
+            if (!isAdmin(interaction)) {
+                return interaction.reply({
+                    content: "❌ Chỉ Admin mới dùng được lệnh này.",
+                    ephemeral: true
+                });
+            }
 
-                await interaction.reply({
+            if (interaction.commandName === "taoform") {
+                FORM_OPEN = true;
+
+                return interaction.reply({
                     content: "📋 **ĐĂNG KÝ BANG CHIẾN**\n\nVui lòng chọn môn phái:",
                     components: createMainButtons()
                 });
             }
 
-            if (interaction.commandName === "thongke") {
-                await sendStats(interaction);
+            if (interaction.commandName === "dongform") {
+                FORM_OPEN = false;
+                return interaction.reply("🔒 Đã đóng form đăng ký.");
             }
 
-            if (interaction.commandName === "danhsach") {
+            if (interaction.commandName === "moform") {
+                FORM_OPEN = true;
+                return interaction.reply("✅ Đã mở lại form đăng ký.");
+            }
+
+            if (interaction.commandName === "thongke") {
+                return await sendStats(interaction);
+            }
+
+            if (interaction.commandName === "xuatdanhsach") {
                 const type = interaction.options.getString("loai");
-                await sendList(interaction, type);
+                return await sendList(interaction, type);
             }
         }
 
         if (interaction.isButton()) {
             if (monPhaiMap[interaction.customId]) {
+                if (!FORM_OPEN) {
+                    return interaction.reply({
+                        content: "🔒 Form đăng ký hiện đang đóng.",
+                        ephemeral: true
+                    });
+                }
+
                 return await openNameModal(interaction, monPhaiMap[interaction.customId], "register");
             }
 
             if (interaction.customId.startsWith("edit_")) {
                 const monPhaiId = interaction.customId.replace("edit_", "");
                 const monPhai = monPhaiMap[monPhaiId];
-
                 if (!monPhai) return;
-
                 return await openNameModal(interaction, monPhai, "edit");
             }
 
@@ -500,25 +432,14 @@ client.on("interactionCreate", async (interaction) => {
 
             if (interaction.customId === "delete_register") {
                 const deleted = await deleteRegistration(interaction.guild.id, interaction.user.id);
-
                 return interaction.reply({
-                    content: deleted
-                        ? "🗑️ Đã hủy đăng ký của bạn."
-                        : "❌ Bạn chưa có đăng ký để hủy.",
+                    content: deleted ? "🗑️ Đã hủy đăng ký của bạn." : "❌ Bạn chưa có đăng ký để hủy.",
                     ephemeral: true
                 });
             }
 
             if (interaction.customId === "stats_class") {
                 return await sendStats(interaction);
-            }
-
-            if (interaction.customId === "list_bangchien") {
-                return await sendList(interaction, "bangchien");
-            }
-
-            if (interaction.customId === "list_scrim") {
-                return await sendList(interaction, "scrim");
             }
         }
 
@@ -535,7 +456,7 @@ client.on("interactionCreate", async (interaction) => {
             const tenNhanVat = interaction.fields.getTextInputValue("ten_nhan_vat");
             tempData[key].tenNhanVat = tenNhanVat;
 
-            await interaction.reply({
+            return interaction.reply({
                 content:
                     `👤 Tên nhân vật: **${tenNhanVat}**\n` +
                     `⚔️ Môn phái: **${tempData[key].monPhai}**\n\n` +
@@ -557,7 +478,6 @@ client.on("interactionCreate", async (interaction) => {
 
             if (interaction.customId === "select_bangchien") {
                 tempData[key].bangChien = interaction.values[0];
-
                 return interaction.update({
                     content: `✅ Bang Chiến: **${tempData[key].bangChien}**\n\nTiếp theo chọn đánh Scrim:`,
                     components: [new ActionRowBuilder().addComponents(createScrimMenu())]
@@ -566,7 +486,6 @@ client.on("interactionCreate", async (interaction) => {
 
             if (interaction.customId === "select_scrim") {
                 tempData[key].scrim = interaction.values[0];
-
                 return interaction.update({
                     content: `✅ Scrim: **${tempData[key].scrim}**\n\nTiếp theo chọn Rank:`,
                     components: [new ActionRowBuilder().addComponents(createRankMenu())]
