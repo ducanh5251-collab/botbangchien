@@ -60,7 +60,7 @@ function getKey(interaction) {
     return `${getGuildId(interaction)}_${interaction.user.id}`;
 }
 
-function getSheetId(guildId) {
+function getConfiguredSheetId(guildId) {
     if (process.env.SERVER_CONFIG_JSON) {
         try {
             const config = JSON.parse(process.env.SERVER_CONFIG_JSON);
@@ -70,24 +70,89 @@ function getSheetId(guildId) {
         }
     }
 
-    return process.env.SHEET_ID;
+    return null;
 }
 
-async function getDoc(guildId) {
-    const auth = new JWT({
+function createAuth() {
+    return new JWT({
         email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
         key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-        scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+        scopes: [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+    });
+}
+
+async function findOrCreateSheetId(guildId, guildName) {
+    const configuredSheetId = getConfiguredSheetId(guildId);
+
+    if (configuredSheetId) {
+        return configuredSheetId;
+    }
+
+    const auth = createAuth();
+    const safeGuildName = guildName.replace(/'/g, "");
+    const title = `BangChien - ${safeGuildName} - ${guildId}`;
+
+    const searchRes = await auth.request({
+        url: "https://www.googleapis.com/drive/v3/files",
+        method: "GET",
+        params: {
+            q: `name='${title}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`,
+            fields: "files(id,name)"
+        }
     });
 
-    const doc = new GoogleSpreadsheet(getSheetId(guildId), auth);
+    if (searchRes.data.files && searchRes.data.files.length > 0) {
+        return searchRes.data.files[0].id;
+    }
+
+    const createRes = await auth.request({
+        url: "https://sheets.googleapis.com/v4/spreadsheets",
+        method: "POST",
+        data: {
+            properties: {
+                title
+            }
+        }
+    });
+
+    const newSheetId = createRes.data.spreadsheetId;
+
+    if (process.env.GOOGLE_OWNER_EMAIL) {
+        await auth.request({
+            url: `https://www.googleapis.com/drive/v3/files/${newSheetId}/permissions`,
+            method: "POST",
+            params: {
+                sendNotificationEmail: false
+            },
+            data: {
+                role: "writer",
+                type: "user",
+                emailAddress: process.env.GOOGLE_OWNER_EMAIL
+            }
+        });
+    }
+
+    console.log(`✅ Đã tạo Google Sheet mới cho server: ${guildName}`);
+    console.log(`🔗 https://docs.google.com/spreadsheets/d/${newSheetId}`);
+
+    return newSheetId;
+}
+
+async function getDoc(guildId, guildName = "Unknown Server") {
+    const auth = createAuth();
+    const sheetId = await findOrCreateSheetId(guildId, guildName);
+
+    const doc = new GoogleSpreadsheet(sheetId, auth);
     await doc.loadInfo();
 
     return doc;
 }
 
-async function getSheet(guildId) {
-    const doc = await getDoc(guildId);
+async function getSheet(guildId, guildName = "Unknown Server") {
+    const doc = await getDoc(guildId, guildName);
     const sheet = doc.sheetsByIndex[0];
 
     await sheet.setHeaderRow([
@@ -105,8 +170,8 @@ async function getSheet(guildId) {
     return sheet;
 }
 
-async function beautifySheet(guildId) {
-    const doc = await getDoc(guildId);
+async function beautifySheet(guildId, guildName = "Unknown Server") {
+    const doc = await getDoc(guildId, guildName);
     const sheet = doc.sheetsByIndex[0];
     const sheetId = sheet.sheetId;
 
@@ -205,7 +270,7 @@ async function beautifySheet(guildId) {
 }
 
 async function saveToGoogleSheet(data) {
-    const sheet = await getSheet(data.guildId);
+    const sheet = await getSheet(data.guildId, data.guildName);
     const rows = await sheet.getRows();
 
     const oldRow = rows.find(row => row.get("Discord ID Ẩn") === data.discordId);
@@ -235,11 +300,11 @@ async function saveToGoogleSheet(data) {
         });
     }
 
-    await beautifySheet(data.guildId);
+    await beautifySheet(data.guildId, data.guildName);
 }
 
-async function deleteRegistration(guildId, discordId) {
-    const sheet = await getSheet(guildId);
+async function deleteRegistration(guildId, guildName, discordId) {
+    const sheet = await getSheet(guildId, guildName);
     const rows = await sheet.getRows();
 
     const row = rows.find(r => r.get("Discord ID Ẩn") === discordId);
@@ -247,13 +312,13 @@ async function deleteRegistration(guildId, discordId) {
     if (!row) return false;
 
     await row.delete();
-    await beautifySheet(guildId);
+    await beautifySheet(guildId, guildName);
 
     return true;
 }
 
-async function getAllRows(guildId) {
-    const sheet = await getSheet(guildId);
+async function getAllRows(guildId, guildName) {
+    const sheet = await getSheet(guildId, guildName);
     return await sheet.getRows();
 }
 
@@ -362,7 +427,9 @@ function createRankMenu() {
 }
 
 async function sendStats(interaction) {
-    const rows = await getAllRows(getGuildId(interaction));
+    const guildId = getGuildId(interaction);
+    const guildName = getGuildName(interaction);
+    const rows = await getAllRows(guildId, guildName);
 
     const counts = {};
     Object.values(monPhaiMap).forEach(name => counts[name] = 0);
@@ -387,7 +454,9 @@ async function sendStats(interaction) {
 }
 
 async function sendList(interaction, type) {
-    const rows = await getAllRows(getGuildId(interaction));
+    const guildId = getGuildId(interaction);
+    const guildName = getGuildName(interaction);
+    const rows = await getAllRows(guildId, guildName);
 
     let filtered = rows;
 
@@ -532,7 +601,11 @@ client.on("interactionCreate", async (interaction) => {
             }
 
             if (interaction.customId === "delete_register") {
-                const deleted = await deleteRegistration(getGuildId(interaction), interaction.user.id);
+                const deleted = await deleteRegistration(
+                    getGuildId(interaction),
+                    getGuildName(interaction),
+                    interaction.user.id
+                );
 
                 return interaction.reply({
                     content: deleted ? "🗑️ Đã hủy đăng ký của bạn." : "❌ Bạn chưa có đăng ký để hủy.",
